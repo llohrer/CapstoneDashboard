@@ -1,0 +1,652 @@
+---
+title: "CapDashHelper"
+output: html_document
+date: "2024-07-14"
+---
+
+### CAPSTONE DASHBOARD HELPER FILE
+This file was created to support the shiny dashboard application 'CapApp.R'. The code below will accomplish data uploads and data manipulations, function creations to conduct data visualization and regression analysis, and the saving of all data, uploaded and newly generated, to RDA files that can be called upon in a separate shiny app file to produce dashboard output. Ultimately, the purpose of this Rmd file is to streamline the development process of the app as well as to create a project where not only the end product is user-friendly, but also the underlying code. Well-structured and comprehensible code will facilitate ease of maintenance, encourage further development, and enable others to easily adapt and reuse portions of the code for different data sets or projects.
+
+
+```{r setup, include=FALSE}
+
+# Load required libraries
+library(readr) 
+library(plm)
+
+library(dplyr)
+library(tidyr)
+  
+library(broom)
+library(zoo)
+library(sandwich)
+library(lmtest)
+
+#library(plotly)
+library(stargazer)
+
+
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Base Data Upload
+Upload data from the Google Drive spreadsheet, which is a compilation of data from the Annual Database of Global Wine Markets (1835 to 2022), and FRED data, details and citations below. 
+
+Anderson, K. and V. Pinilla (with the assistance of A.J. Holmes), Annual Database of Global Wine Markets, 1835 to 2022, freely available in Excel at the University of Adelaide’s Wine Economics Research Centre, December 2023
+
+The upload sources data from tabs the following tabs:
+8: Volume of wine production per capita (litres) 
+12: Volume of wine export per capita (litres) 
+17: Volume of wine import per capita (kilolitres)
+34: Volume of beverage wine consumption (kilolitres)
+38 Volume of beverage wine consumption per capita (litres) 
+63: Real GDP per capita at 1990 International Geary-Khamis dollars
+'Wine Consumption per adult' (gid=1192577125) computed using tabs:
+34: Volume of beverage wine consumption (kilolitres)
+58: Population (on July 1) 
+60: Share of adults (>14 years) in population (%)
+
+
+World Bank Group, DataBank, World Development Indicators, Official Exchange Rate; https://databank.worldbank.org/source/world-development-indicators/Series/PA.NUS.FCRF# 
+
+Official exchange rate is sourced from the World Bank
+
+
+```{r data_upload}
+
+# Upload data from google drive spreadsheet
+
+
+# Define the base URL
+base_url <- 'https://docs.google.com/spreadsheets/d/1_MQanKGEWOBr71H3I8Z8g049GzVT94UCqmQ5SGX4_rw/export?format=csv&id=1_MQanKGEWOBr71H3I8Z8g049GzVT94UCqmQ5SGX4_rw&gid='
+# Define GIDS
+gids <- c('1040342295', '729504842', '780290837', '869306701', '1192577125', '1716168823', '2097958463', '799223978')
+# Give names for gids
+names <- c('wineproduction', 'wineexports', 'wineimports', 'realgdp', 'conperadult', 'rate', 'conpercap', 'convol' )
+
+# Create list to store the dataframes
+data_list <- list()
+# Loop through the gids and import the data
+for (i in seq_along(gids)) {
+  url <- paste0(base_url, gids[i])
+  data_list[[names[i]]] <- read_csv(url)
+}
+
+# Assign variable names 
+wineproduction <- data_list$wineproduction 
+wineexports <- data_list$wineexports
+wineimports <- data_list$wineimports
+realgdp <- data_list$realgdp
+rate <- data_list$rate
+conpercap <- data_list$conpercap
+conperadult <- data_list$conperadult
+convol <- data_list$convol
+
+```
+
+
+## Data Manipulations
+Edit data so units are appropriate and consistent across comparable values. Save data as both a regular dataframe and a panel dataframe, as well as in alternative formats (either subsetted, renamed, or combined with supplemental data) designed for ease of use in generation of specific output.
+
+# Base Dataframe and Panel Dataframe
+The dataframe 'capdata' and panel dataframe 'cappdata' consist of all base data measured in appropriate units and and are the root of what we will be analyzing in this project.
+```{r base_data}
+# Reshape dfs to long format and proper in units
+  # Convert KL data to L except convol (consumption volume) remains in KL
+wineproduction_long <- wineproduction %>%
+  pivot_longer(cols = starts_with("1961"):starts_with("2018"), 
+               names_to = "Year", 
+               values_to = "WineProduction") %>%
+  mutate(Year = as.numeric(Year))
+wineexports_long <- wineexports %>%
+  pivot_longer(cols = starts_with("1961"):starts_with("2018"), 
+               names_to = "Year", 
+               values_to = "WineExports") %>%
+  mutate(Year = as.numeric(Year))
+wineimports_long <- wineimports %>%
+  pivot_longer(cols = starts_with("1961"):starts_with("2018"), 
+               names_to = "Year", 
+               values_to = "WineImports") %>%
+  mutate(Year = as.numeric(Year),
+         WineImports = WineImports * 1000)  # Convert kiloliters to liters
+realgdp_long <- realgdp %>%
+  pivot_longer(cols = starts_with("1961"):starts_with("2018"), 
+               names_to = "Year", 
+               values_to = "RealGDP") %>%
+  mutate(Year = as.numeric(Year))
+rate_long <- rate %>%
+  pivot_longer(cols = starts_with("1961"):starts_with("2018"), 
+               names_to = "Year", 
+               values_to = "Rate") %>%
+  mutate(Year = as.numeric(Year))
+conpercap_long <- conpercap %>%
+  pivot_longer(cols = starts_with("1961"):starts_with("2018"), 
+               names_to = "Year", 
+               values_to = "ConPerCap") %>%
+  mutate(Year = as.numeric(Year))
+conperadult_long <- conperadult %>%
+  pivot_longer(cols = starts_with("1961"):starts_with("2018"), 
+               names_to = "Year", 
+               values_to = "ConPerAdult") %>%
+  mutate(Year = as.numeric(Year),
+         ConPerAdult = ConPerAdult * 1000)  # Convert kiloliters to liters
+convol_long <- convol %>%
+  pivot_longer(cols = starts_with("1961"):starts_with("2018"), 
+               names_to = "Year", 
+               values_to = "ConVol") %>%
+  mutate(Year = as.numeric(Year))
+
+# Merge data by country and year
+sourcedata <- wineproduction_long %>%
+  left_join(wineexports_long, by = c("Country", "Year")) %>%
+  left_join(wineimports_long, by = c("Country", "Year")) %>%
+  left_join(realgdp_long, by = c("Country", "Year")) %>%
+  left_join(rate_long, by = c("Country", "Year")) %>%
+  left_join(conpercap_long, by = c("Country", "Year")) %>%
+  left_join(conperadult_long, by = c("Country", "Year")) %>%
+  left_join(convol_long, by = c("Country", "Year"))
+
+
+# Save as a regular dataframe
+capdata <- sourcedata
+save(capdata, file = "cap_data.rda")
+
+# Convert data to a panel dataframe
+cappdata <- pdata.frame(sourcedata, index = c("Country", "Year"))
+
+# Save as a panel dataframe
+save(cappdata, file = "cap_pdata.rda")
+
+```
+
+
+# Titled Data
+This code chunk renames the base data variables to have more descriptive and well-formatted titles. The renamed dataframes are saved as distinct variations of 'titledata', and stored in respective RDA files, which will be called upon widely across the shiny app in generation of various graphs and charts to more easily display meaningful titles for end users to understand the output visualizations. 
+```{r titled_pdata}
+
+# Load base dataframe
+load("cap_data.rda")
+
+# Load base dataframe
+load("cap_data.rda")
+
+# Rename Variables and Exclude Unwanted Columns
+titledata <- capdata %>%
+  rename(
+    `Wine Production (Liters per Capita)` = WineProduction,
+    `Wine Exports (Liters per Capita)` = WineExports,
+    `Wine Imports (Liters per Capita)` = WineImports,
+    `Real GDP per Capita (1990 Int'l $)` = RealGDP,
+    `Exchange Rate` = Rate,
+    `Wine Consumption (Liters per Adult)` = ConPerAdult
+  ) %>%
+  select(Country, Year,  # Include Country and Year for panel data
+         `Wine Consumption (Liters per Adult)`, 
+         `Wine Production (Liters per Capita)`,
+         `Wine Exports (Liters per Capita)`,
+         `Wine Imports (Liters per Capita)`,
+         `Real GDP per Capita (1990 Int'l $)`,
+         `Exchange Rate`)  # Reorder columns and exclude ConVol and ConPerCap
+
+# Save as a regular dataframe
+save(titledata, file = "title_data.rda")
+
+# Convert data to a panel dataframe
+titlepdata <- pdata.frame(titledata, index = c("Country", "Year"))
+
+# Save as a panel dataframe
+save(titlepdata, file = "title_pdata.rda")
+
+colnames(titlepdata)
+```
+
+# Choropleth Map
+Upload supplement data of country geometries to support choropleth map creation. The uploaded csv contains country codes that correlate to their map geometries as defined in the Natural Earth dataset ("No permission is needed to use Natural Earth. Crediting the authors is unnecessary"). The data is then combined with wine consumption variables from our base data files.
+```{r choropleth_map}
+
+# Load base data
+load('cap_pdata.rda')
+
+# Load support data with built-in country geometries for country codes
+codesdf <- read.csv("https://raw.githubusercontent.com/plotly/datasets/master/2014_world_gdp_with_codes.csv")
+
+# Merge data to create dataframe for choropleth map
+coded_panel <- merge(cappdata, codesdf, by.x = "Country", by.y = "COUNTRY", all.x = FALSE)
+
+# Save the data frame to .rda files
+save(coded_panel, file = "coded_panel.rda")
+
+```
+
+# Subset Panel Generation
+This section of the code is the most user/decision intensive. It is where the user can change or add subsets created from the base data uploads to include specific variables they desire to examine further/jointly. The purpose of defining the subsets in this manner is to accomplish an efficient method of data wrangling to provide consistency in format for the data entering into functions we will build, as well as to be able to compare the significance of different sets of variables when we ultimately use them as the dependent and independent variables in our regression analysis.
+```{r subset_panels}
+
+# Load base data
+load('cap_pdata.rda')
+
+# Create subset panels for model analysis and comparison 
+
+# Define chosen wine consumption variable as 'WineConsumption'
+# Rename variables in regpdata
+regpdata <- cappdata %>%
+  rename(
+    `WineConsumption` = ConPerAdult,
+    `ExchangeRate` = Rate
+  )
+
+# To lag a variable: lag variables by 1 year and append to regpdata as new variables
+regpdata$WineProductionLag <- lag(regpdata$WineProduction, 1)
+regpdata$WineImportsLag <- lag(regpdata$WineImports, 1)
+regpdata$WineConsumptionLag <- lag(regpdata$WineConsumption, 1)
+# Remove year 1961 from the data to avoid missing values
+time_index <- attr(regpdata, "index")[, "Year"]
+regpdata62 <- regpdata[time_index != 1961, ]
+
+# Specify variables of interest and store in vars
+# Subset the data by vars
+# Hold WineConsumption as first variable for looping consistency
+# Store each data subset created in the panel_subsets list
+panel_subsets <- list()
+
+# Subset 1, regression: WineConsumption ~ WineProduction + WineExports + WineImports
+vars <- c('WineConsumption', 'WineProduction', 'WineExports', 'WineImports')
+pansub1 <- regpdata62[vars]
+panel_subsets[[1]] <- pansub1
+
+# Subset 2, regression: WineConsumption ~ WineProduction + WineExports + WineImports + RealGDP + ExchangeRate
+vars <- c('WineConsumption', 'WineProduction', 'WineExports', 'WineImports', 'RealGDP', 'ExchangeRate')
+pansub2 <- regpdata62[vars]
+panel_subsets[[2]] <- pansub2
+
+# Subset 3, regression: WineConsumption ~ lag(WineProduction) + WineExports + WineImports + RealGDP + ExchangeRate
+vars <- c('WineConsumption', 'WineProductionLag', 'WineExports', 'WineImports', 'RealGDP', 'ExchangeRate')
+pansub3 <- regpdata62[vars]
+panel_subsets[[3]] <- pansub3
+
+# Subset 4, regression: WineConsumption ~ WineProduction + WineExports + lag(WineImports) + RealGDP + ExchangeRate
+vars <- c('WineConsumption', 'WineProduction', 'WineExports', 'WineImportsLag', 'RealGDP', 'ExchangeRate')
+pansub4 <- regpdata62[vars]
+panel_subsets[[4]] <- pansub4
+
+# Subset 5, regression: WineConsumption ~ lag(WineProduction) + WineExports + lag(WineImports) + RealGDP + ExchangeRate
+vars <- c('WineConsumption', 'WineProductionLag', 'WineExports', 'WineImportsLag', 'RealGDP', 'ExchangeRate')
+pansub5 <- regpdata62[vars]
+panel_subsets[[5]] <- pansub5
+
+
+# Subset 6, regression: WineConsumption ~ lag(WineProduction) + WineExports + lag(WineImports) + RealGDP + lag(WineConsumption)
+vars <- c('WineConsumption', 'WineProductionLag', 'WineExports', 'WineImportsLag', 'RealGDP', 'ExchangeRate', 'WineConsumptionLag')
+pansub6 <- regpdata62[vars]
+panel_subsets[[6]] <- pansub6
+
+# Save the panel_subsets list to an .rda file
+save(panel_subsets, file = "panel_subsets.rda")
+
+# Save model formulas
+model_formulas <- list(
+  "Model 1"  = "Wine Consumption ~ Wine Production + Wine Exports + Wine Imports",
+  "Model 2" = "Wine Consumption ~ Wine Production + Wine Exports + Wine Imports + Real GDP + Exchange Rate",
+  "Model 3" = "Wine Consumption ~ Lagged Wine Production + Wine Exports + Wine Imports + Real GDP + Exchange Rate",
+  "Model 4" = "Wine Consumption ~ Wine Production + Wine Exports + Lagged Wine Imports + Real GDP + Exchange Rate",
+  "Model 5" = "Wine Consumption ~ Lagged Wine Production + Wine Exports + Lagged Wine Imports + Real GDP + Exchange Rate",
+  "Model 6" = "Wine Consumption ~ Wine Production + Wine Exports + Wine Imports + Real GDP + Exchange Rate + Lagged Wine Consumption"
+)
+
+save(model_formulas, file = "model_formulas.rda")
+```
+
+## Regression Analysis
+In this section of code we will define functions to dynamically apply regression analysis and statistical computations to the formatted data passed to them. We will apply the functions to run regressions and save our data to be called upon and displayed in the shiny app. Of note, the functions are built to be able to handle errors in model fitting and continue the program while providing useful and immediate feedback to the user regarding the performance of the equations passed to the regression function.
+
+# Regression Functions
+Define functions for use in regression analysis to effectively run regressions, capture model summaries and compute additional statistics, and save results.
+```{r regression_functions}
+
+## Regression Functions
+# Function to perform regression and save model data
+perform_regression <- function(subset_data, model_type) {
+  dep_var <- 'WineConsumption'
+  indep_vars <- setdiff(colnames(subset_data), dep_var)
+  formula <- as.formula(paste(dep_var, "~", paste(indep_vars, collapse = " + ")))
+  
+  tryCatch({
+    if (model_type == 'fixed') {
+      model <- plm(formula, data = subset_data, model = 'within', effect = "twoways")
+    } else {
+      stop("Unknown model type")
+    }
+    
+    # Extract fitted values and residuals
+    fitted_values <- as.numeric(fitted(model))
+    residuals <- as.numeric(residuals(model))
+    
+    # Compute ACF of residuals
+    acf_values <- acf(residuals, plot = FALSE)$acf
+    
+    if (length(fitted_values) != nrow(subset_data) || length(residuals) != nrow(subset_data)) {
+      stop("Length of fitted values or residuals does not match the number of rows in the data.")
+    }
+    
+    return(list(
+      model = model,
+      fitted_values = fitted_values,
+      residuals = residuals,
+      acf = acf_values,
+      formula = as.character(formula)  # Save the formula as a string
+    ))
+  }, error = function(e) {
+    cat("Error occurred during model fitting:\n", conditionMessage(e), "\n")
+    return(NULL)
+  })
+}
+
+compute_aic_bic <- function(model) {
+  if (inherits(model, "plm") || inherits(model, "lm")) {
+    n <- length(model$residuals)
+    k <- length(coef(model))
+    logLik <- sum(dnorm(model$residuals, mean = 0, sd = sd(model$residuals), log = TRUE))
+    aic <- -2 * logLik + 2 * k
+    bic <- -2 * logLik + log(n) * k
+  } else {
+    stop("Unknown model type for AIC/BIC computation")
+  }
+  return(c(AIC = aic, BIC = bic))
+}
+
+
+# Function to perform Breusch-Pagan test for heteroscedasticity
+perform_breusch_pagan_test <- function(model) {
+  if (inherits(model, "plm") || inherits(model, "lm")) {
+    test_result <- bptest(model, studentize = TRUE)
+    return(list(
+      p_value = test_result$p.value,
+      test_statistic = test_result$statistic,
+      test_name = "Breusch-Pagan Test"
+    ))
+  } else {
+    stop("Unknown model type for Breusch-Pagan test")
+  }
+}
+
+summarize_model <- function(model_data) {
+  if (is.null(model_data)) {
+    return(NULL)
+  }
+  
+  model <- model_data$model
+  fitted_values <- model_data$fitted_values
+  residuals <- model_data$residuals
+  acf_values <- model_data$acf
+  
+  # Extract model summary
+  model_summary <- tryCatch({
+    summary(model)
+  }, error = function(e) {
+    cat("Error summarizing model:", conditionMessage(e), "\n")
+    return(NULL)
+  })
+  
+  r_squared <- if (!is.null(model_summary)) model_summary$r.squared["rsq"] else NA
+  adj_r_squared <- if (!is.null(model_summary)) model_summary$r.squared["adjrsq"] else NA
+  f_statistic <- if (!is.null(model_summary)) model_summary$fstatistic$statistic["F"] else NA
+  
+  aic_bic <- compute_aic_bic(model)
+  aic_value <- aic_bic["AIC"]
+  bic_value <- aic_bic["BIC"]
+  
+  panel_data_index <- tryCatch({
+    as.data.frame(index(model$residuals))
+  }, error = function(e) {
+    cat("Error indexing model residuals:", conditionMessage(e), "\n")
+    return(NULL)
+  })
+  if (!is.null(panel_data_index)) {
+    colnames(panel_data_index) <- c("Country", "Year")
+  }
+  
+  residuals_df <- tryCatch({
+    data.frame(panel_data_index, Residuals = residuals)
+  }, error = function(e) {
+    cat("Error creating residuals data frame:", conditionMessage(e), "\n")
+    return(NULL)
+  })
+  
+  fitted_values_df <- tryCatch({
+    data.frame(panel_data_index, FittedValues = fitted_values)
+  }, error = function(e) {
+    cat("Error creating fitted values data frame:", conditionMessage(e), "\n")
+    return(NULL)
+  })
+  
+  combined_df <- tryCatch({
+    merge(residuals_df, fitted_values_df, by = c("Country", "Year"))
+  }, error = function(e) {
+    cat("Error merging residuals and fitted values data frames:", conditionMessage(e), "\n")
+    return(NULL)
+  })
+  
+  model_stats <- data.frame(
+    R_Squared = r_squared,
+    Adj_R_Squared = adj_r_squared,
+    F_Statistic = f_statistic,
+    AIC = aic_value,
+    BIC = bic_value
+  )
+  
+  # Compute robust standard errors
+  robust_se <- tryCatch({
+    coeftest(model, vcov. = vcovHC(model, type = "HC1"))
+  }, error = function(e) {
+    cat("Error computing robust standard errors:", conditionMessage(e), "\n")
+    return(NULL)
+  })
+  
+  # Extract Breusch-Pagan test results
+  breusch_pagan_test <- tryCatch({
+    perform_breusch_pagan_test(model)
+  }, error = function(e) {
+    cat("Error performing Breusch-Pagan test:", conditionMessage(e), "\n")
+    return(NULL)
+  })
+  
+  return(list(
+    tidy = tidy(model),
+    model_stats = model_stats,
+    combined_data = combined_df,
+    acf = acf_values,
+    formula = model_data$formula,
+    robust_se = robust_se,  # Include robust standard errors
+    breusch_pagan_test = breusch_pagan_test  # Include Breusch-Pagan test results
+  ))
+}
+
+
+```
+
+# Model Processing
+Use the functions defined above to generate and save comprehensive model summaries and statistics.
+```{r model_analysis}
+
+## Model Processing
+# Load the panel_subsets list from the .rda file
+load("panel_subsets.rda")
+
+# Initialize lists for model data and summaries
+fitted_models <- list()
+model_summaries <- list()
+
+# Initialize the number of subsets
+num_subsets <- length(panel_subsets)
+
+# Model Processing
+for (i in 1:num_subsets) {
+  subset_data <- panel_subsets[[i]]
+  cat("Processing subset", i, "with", nrow(subset_data), "rows and", ncol(subset_data), "columns.\n")
+  
+  # Fit and summarize fixed effects model
+  fixed_model_data <- perform_regression(subset_data, 'fixed')
+  
+  if (!is.null(fixed_model_data)) {
+    fitted_models[[paste0("Model_", i, "_fixed")]] <- fixed_model_data
+    
+    # Compute robust standard errors for fixed model
+    robust_se <- tryCatch({
+      coeftest(fixed_model_data$model, vcov. = vcovHC(fixed_model_data$model, type = "HC1"))
+    }, error = function(e) {
+      cat("Error computing robust standard errors for model", i, ":", conditionMessage(e), "\n")
+      NULL
+    })
+    
+    # Add robust standard errors to model data
+    fixed_model_data$robust_se <- robust_se
+    
+    model_summary <- tryCatch({
+      summarize_model(fixed_model_data)
+    }, error = function(e) {
+      cat("Error summarizing model", i, ":", conditionMessage(e), "\n")
+      NULL
+    })
+    
+    model_summaries[[paste0("Model_", i)]] <- model_summary
+    if (!is.null(model_summary)) {
+      cat("Fixed effects model", i, "fitted and summarized successfully.\n")
+    } else {
+      cat("Fixed effects model", i, "could not be summarized.\n")
+    }
+  }
+}
+
+# Save the model summaries to an RData file
+save(model_summaries, file = "reg_summaries.rda")
+
+# Combine model_stats into a single data frame for comparison
+model_statistics <- bind_rows(lapply(model_summaries, function(x) x$model_stats), .id = "Model")
+# Save the model_statistics
+save(model_statistics, file = "model_statistics.rda")
+
+# Save model_stats_combined
+save(model_statistics, file = "model_statistics.rda")
+
+
+```
+
+
+```{r robuest_error}
+## Function to extract robust standard errors for a model and return them
+extract_robust_se <- function(model_summary) {
+  if (is.null(model_summary)) {
+    return(NULL)
+  }
+  
+  # Extract robust standard errors
+  robust_se <- model_summary$robust_se
+  
+  if (is.null(robust_se)) {
+    return(NULL)
+  }
+  
+  return(robust_se)
+}
+
+# Load model summaries from .rda file
+load("reg_summaries.rda")
+
+# Initialize a list to store robust standard errors
+robust_se_list <- list()
+
+# Process each model summary and store robust standard errors in the list
+for (model_name in names(model_summaries)) {
+  model_summary <- model_summaries[[model_name]]
+  
+  # Extract robust standard errors for the current model
+  robust_se <- extract_robust_se(model_summary)
+  
+  if (!is.null(robust_se)) {
+    robust_se_list[[model_name]] <- robust_se
+  } else {
+    cat("No robust standard errors available for", model_name, "\n")
+  }
+}
+
+# Save the list of robust standard errors to an RData file
+save(robust_se_list, file = "robust_se_list.rda")
+
+# Example to verify the saved data
+load("robust_se_list.rda")
+
+# Option to print data to verify current output is equivalent to manual upload below
+# print(robust_se_list)
+
+# Load required library
+library(dplyr)
+
+# Model 1 data
+model_1_data <- data.frame(
+  Variable = c("WineProduction", "WineExports", "WineImports"),
+  Estimate = c(0.80810363, -0.90902453, 0.00098722),
+  Std_Error = c(0.07967459, 0.11980043, 0.00037394),
+  t_value = c(10.1426, -7.5878, 2.6400),
+  Pr_It = c("< 2.2e-16", "5.554e-14", "0.008372"),
+  stringsAsFactors = FALSE
+)
+save(model_1_data, file = "robust_se_model_1.rda")
+
+# Model 2 data
+model_2_data <- data.frame(
+  Variable = c("WineProduction", "WineExports", "WineImports", "RealGDP", "ExchangeRate"),
+  Estimate = c(8.2186e-01, -9.1181e-01, 9.5174e-04, 2.0516e-06, -9.2946e-03),
+  Std_Error = c(8.4032e-02, 1.1820e-01, 3.7534e-04, 3.6152e-04, 5.0233e-03),
+  t_value = c(9.7803, -7.7138, 2.5357, 0.0057, -1.8503),
+  Pr_It = c("< 2.2e-16", "2.161e-14", "0.01132", "0.99547", "0.06446"),
+  stringsAsFactors = FALSE
+)
+save(model_2_data, file = "robust_se_model_2.rda")
+
+# Model 3 data
+model_3_data <- data.frame(
+  Variable = c("WineProduction", "WineExports", "WineImports", "RealGDP", "ExchangeRate"),
+  Estimate = c(9.0280e-01, -1.0528e+00, 1.1794e-03, -8.6343e-05, -1.0112e-02),
+  Std_Error = c(7.4703e-02, 9.8408e-02, 2.9078e-04, 3.2083e-04, 2.8818e-03),
+  t_value = c(12.0852, -10.6981, 4.0560, -0.2691, -3.5089),
+  Pr_It = c("< 2.2e-16", "< 2.2e-16", "5.238e-05", "0.7878704", "0.0004627"),
+  stringsAsFactors = FALSE
+)
+save(model_3_data, file = "robust_se_model_3.rda")
+
+# Model 4 data
+model_4_data <- data.frame(
+  Variable = c("WineProduction", "WineExports", "WineImports", "RealGDP", "ExchangeRate"),
+  Estimate = c(8.1117e-01, -9.1096e-01, 8.5027e-04, 6.1822e-05, -9.2156e-03),
+  Std_Error = c(8.6609e-02, 1.2103e-01, 4.1016e-04, 3.7101e-04, 5.1470e-03),
+  t_value = c(9.3658, -7.5267, 2.0729, 0.1666, -1.7905),
+  Pr_It = c("< 2.2e-16", "8.744e-14", "0.03834", "0.86768", "0.07357"),
+  stringsAsFactors = FALSE
+)
+save(model_4_data, file = "robust_se_model_4.rda")
+
+# Model 5 data
+model_5_data <- data.frame(
+  Variable = c("WineProduction", "WineExports", "WineImports", "RealGDP", "ExchangeRate"),
+  Estimate = c(8.8050e-01, -1.0455e+00, 9.3431e-04, 4.2905e-05, -1.0061e-02),
+  Std_Error = c(7.7727e-02, 1.0477e-01, 3.2467e-04, 3.3360e-04, 3.1796e-03),
+  t_value = c(11.3281, -9.9789, 2.8777, 0.1286, -3.1643),
+  Pr_It = c("< 2.2e-16", "< 2.2e-16", "0.004060", "0.897683", "0.001585"),
+  stringsAsFactors = FALSE
+)
+save(model_5_data, file = "robust_se_model_5.rda")
+
+# Model 6 data
+model_6_data <- data.frame(
+  Variable = c("WineProduction", "WineExports", "WineImports", "RealGDP", "ExchangeRate", "WineConsumption"),
+  Estimate = c(6.5726e-02, -9.3893e-02, 6.8657e-05, 2.9159e-05, -1.4923e-03, 9.0414e-01),
+  Std_Error = c(1.9579e-02, 2.1315e-02, 2.5333e-05, 5.0375e-05, 4.058e-04, 2.1454e-02),
+  t_value = c(3.3569, -4.4051, 2.7102, 0.5788, -4.3816, 42.1426),
+  Pr_It = c("0.0008072", "1.129e-05", "0.0067982", "0.5627788", "1.257e-05", "< 2.2e-16"),
+  stringsAsFactors = FALSE
+)
+save(model_6_data, file = "robust_se_model_6.rda")
+
+```
+
