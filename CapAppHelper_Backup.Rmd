@@ -22,9 +22,7 @@ library(zoo)
 library(sandwich)
 library(lmtest)
 
-#library(plotly)
 library(stargazer)
-
 
 
 knitr::opts_chunk$set(echo = TRUE)
@@ -198,7 +196,6 @@ titlepdata <- pdata.frame(titledata, index = c("Country", "Year"))
 # Save as a panel dataframe
 save(titlepdata, file = "title_pdata.rda")
 
-colnames(titlepdata)
 ```
 
 # Choropleth Map
@@ -533,8 +530,9 @@ save(model_statistics, file = "model_statistics.rda")
 ```
 
 
-```{r robuest_error}
-## Function to extract robust standard errors for a model and return them
+```{r robuest_errors}
+
+# Function to extract robust standard errors from model
 extract_robust_se <- function(model_summary) {
   if (is.null(model_summary)) {
     return(NULL)
@@ -579,8 +577,6 @@ load("robust_se_list.rda")
 # Option to print data to verify current output is equivalent to manual upload below
 # print(robust_se_list)
 
-# Load required library
-library(dplyr)
 
 # Model 1 data
 model_1_data <- data.frame(
